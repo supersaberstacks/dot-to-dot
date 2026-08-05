@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A4 Dot-to-Dot Generator</title>
+<meta name="description" content="Generate a printable A4 dot-to-dot puzzle. Refresh for a new one, then print.">
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1d2026;
+    --line: #2e333c;
+    --text: #e7e9ee;
+    --muted: #9aa2b1;
+    --accent: #5b8cff;
+    --paper-w: 210mm;
+    --paper-h: 297mm;
+    --pad: 12mm;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.45 ui-sans-serif, system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  .controls {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 14px;
+    padding: 12px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .brand { font-weight: 650; letter-spacing: .2px; margin-right: 6px; white-space: nowrap; }
+
+  .field {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  select, input[type="text"] {
+    background: #12141a;
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 6px 8px;
+    font: inherit;
+    font-size: 14px;
+  }
+
+  input[type="text"] { width: 11ch; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+
+  button {
+    border: 1px solid var(--line);
+    background: #262b33;
+    color: var(--text);
+    border-radius: 7px;
+    padding: 7px 14px;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  button:hover { border-color: #4a515e; }
+  button:active { transform: translateY(1px); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #0b1020; }
+  button.primary:hover { background: #7aa2ff; border-color: #7aa2ff; }
+
+  .spacer { flex: 1 1 auto; }
+  .hint { color: var(--muted); font-size: 13px; }
+
+  kbd {
+    background: #12141a;
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 1px 5px;
+    font: inherit;
+    font-size: 12px;
+  }
+
+  .stage {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+    padding: 24px 12px 48px;
+  }
+
+  .sheet {
+    width: var(--paper-w);
+    height: var(--paper-h);
+    max-width: 100%;
+    padding: var(--pad);
+    background: #fff;
+    color: #000;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
+  }
+
+  .sheet-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    border-bottom: 0.5pt solid #000;
+    padding-bottom: 2mm;
+    margin-bottom: 3mm;
+  }
+
+  .sheet-title {
+    font-size: 12pt;
+    font-weight: 700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+
+  .sheet-meta {
+    font-size: 7.5pt;
+    letter-spacing: .04em;
+    color: #444;
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+
+  .art { flex: 1 1 auto; min-height: 0; display: flex; }
+  .art svg { width: 100%; height: 100%; display: block; }
+
+  .sheet-foot {
+    font-size: 7.5pt;
+    color: #444;
+    text-align: center;
+    padding-top: 2mm;
+  }
+
+  #answerSheet[hidden] { display: none; }
+
+  @media print {
+    html, body { background: #fff; }
+    .controls, .stage > .hint { display: none !important; }
+    .stage { padding: 0; gap: 0; display: block; }
+    .sheet { box-shadow: none; width: var(--paper-w); height: var(--paper-h); break-inside: avoid; }
+    .sheet + .sheet { break-before: page; }
+  }
+</style>
+</head>
+<body>
+
+<div class="controls">
+  <span class="brand">⠿ A4 Dot-to-Dot</span>
+
+  <label class="field">
+    Subject
+    <select id="subject"><option value="">Random</option></select>
+  </label>
+
+  <label class="field">
+    Difficulty
+    <select id="difficulty">
+      <!-- "up to": a small, simple outline cannot carry the full count with
+           legible numbers, so the generator caps it and reports the real one. -->
+      <option value="tiny">Tiny — up to 25 dots</option>
+      <option value="easy" selected>Easy — up to 50 dots</option>
+      <option value="medium">Medium — up to 100 dots</option>
+      <option value="hard">Hard — up to 175 dots</option>
+      <option value="epic">Epic — up to 300 dots</option>
+    </select>
+  </label>
+
+  <label class="field">
+    Paper
+    <select id="orientation">
+      <option value="auto" selected>Auto — fit subject</option>
+      <option value="portrait">A4 portrait</option>
+      <option value="landscape">A4 landscape</option>
+    </select>
+  </label>
+
+  <label class="field">
+    Seed
+    <input type="text" id="seed" spellcheck="false" autocomplete="off">
+  </label>
+
+  <label class="field"><input type="checkbox" id="withAnswer"> Answer page</label>
+
+  <div class="spacer"></div>
+
+  <button class="primary" id="refresh" title="New puzzle (R)">↻ New puzzle</button>
+  <button id="print" title="Print (Ctrl+P)">🖨 Print</button>
+</div>
+
+<div class="stage">
+  <section class="sheet" id="puzzleSheet">
+    <header class="sheet-head">
+      <div class="sheet-title">Join the Dots</div>
+      <div class="sheet-meta" id="puzzleMeta"></div>
+    </header>
+    <div class="art" id="puzzleArt"></div>
+    <div class="sheet-foot" id="puzzleFoot">Start at 1 and join the dots in order. What is it?</div>
+  </section>
+
+  <section class="sheet" id="answerSheet" hidden>
+    <header class="sheet-head">
+      <div class="sheet-title" id="answerTitle">Answer</div>
+      <div class="sheet-meta" id="answerMeta"></div>
+    </header>
+    <div class="art" id="answerArt"></div>
+  </section>
+
+  <p class="hint"><kbd>R</kbd> new puzzle · <kbd>Ctrl</kbd>+<kbd>P</kbd> print · the seed in the URL reproduces the exact same puzzle</p>
+</div>
+
+<script src="shapes.js"></script>
+<script>
+(() => {
+  "use strict";
+
+  const SHAPES = window.DOT_SHAPES || [];
+
+  // minGap is the smallest spacing we will allow between consecutive dots, in
+  // mm. It is what stops numbers colliding on fine detail, and it caps the dot
+  // count on small subjects regardless of the difficulty asked for.
+  // minCorners keeps featureless subjects out of the high dot counts: a
+  // crescent moon drawn with 160 dots gives itself away before you join
+  // anything. maxParts is how much interior detail the difficulty reveals.
+  // minCorners and minParts keep featureless subjects out of the high dot
+  // counts: a smooth outline drawn with 160 dots gives itself away before you
+  // join anything, however many corners it technically has. minParts matters
+  // most - interior detail is what a big dot budget is actually for.
+  // maxParts is how much of that detail the difficulty reveals.
+  const PRESETS = {
+    tiny:   { dots: 25,  minGap: 11,  num: 4.0, dot: 0.75, minCorners: 0,  minParts: 1, maxParts: 1 },
+    easy:   { dots: 50,  minGap: 8,   num: 3.4, dot: 0.65, minCorners: 0,  minParts: 1, maxParts: 2 },
+    medium: { dots: 100, minGap: 5.5, num: 2.9, dot: 0.55, minCorners: 16, minParts: 2, maxParts: 3 },
+    hard:   { dots: 175, minGap: 4.2, num: 2.4, dot: 0.5,  minCorners: 22, minParts: 3, maxParts: 5 },
+    epic:   { dots: 300, minGap: 3.2, num: 2.0, dot: 0.42, minCorners: 26, minParts: 4, maxParts: 6 }
+  };
+
+  const PAPER = { portrait: { w: 210, h: 297 }, landscape: { w: 297, h: 210 } };
+  const PAD = 12;
+  const HEAD = 11;
+  const FOOT = 7;
+
+  // ------------------------------------------------------------------ rng
+  function hashSeed(str) {
+    let h = 2166136261 >>> 0;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+
+  function mulberry32(a) {
+    return function () {
+      a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  const randomSeed = () => Math.random().toString(36).slice(2, 8).toUpperCase();
+
+  // ------------------------------------------------------------- geometry
+  function rotated(flat, angle, mirror) {
+    const cos = Math.cos(angle), sin = Math.sin(angle);
+    const pts = [];
+    for (let i = 0; i < flat.length; i += 2) {
+      let x = flat[i] - 500, y = flat[i + 1] - 500;
+      if (mirror) x = -x;
+      pts.push([x * cos - y * sin, x * sin + y * cos]);
+    }
+    return pts;
+  }
+
+  function bbox(pts) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const [x, y] of pts) {
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+    return { minX, minY, w: maxX - minX, h: maxY - minY };
+  }
+
+  // Fit the subject to the page area, in mm. The picture is never turned on its
+  // side to fill the sheet better - a tractor lying on its back is harder to
+  // recognise, which is the whole point of the puzzle. Wide subjects get
+  // landscape paper instead, see pickOrientation. Every part shares one
+  // transform so the interior detail stays registered to the outline.
+  function place(parts, areaW, areaH, angle, mirror) {
+    const MARGIN = 9; // room for the numbers, which sit outside the outline
+    const placed = parts.map(p => rotated(p.p, angle, mirror));
+    const b = bbox(placed[0]);   // the silhouette encloses everything else
+    const k = Math.min((areaW - MARGIN * 2) / b.w, (areaH - MARGIN * 2) / b.h);
+    const ox = (areaW - b.w * k) / 2 - b.minX * k;
+    const oy = (areaH - b.h * k) / 2 - b.minY * k;
+    return placed.map(pts => pts.map(([x, y]) => [x * k + ox, y * k + oy]));
+  }
+
+  // Aspect ratio of the subject as drawn, used to choose the paper.
+  function aspectOf(shape) {
+    const b = bbox(rotated(shape.parts[0].p, 0, false));
+    return b.w / b.h;
+  }
+
+  function perimeter(pts) {
+    let d = 0;
+    for (let i = 1; i < pts.length; i++) d += Math.hypot(pts[i][0] - pts[i-1][0], pts[i][1] - pts[i-1][1]);
+    return d + Math.hypot(pts[0][0] - pts[pts.length-1][0], pts[0][1] - pts[pts.length-1][1]);
+  }
+
+  function rdpIdx(pts, eps) {
+    const keep = new Uint8Array(pts.length);
+    keep[0] = keep[pts.length - 1] = 1;
+    const stack = [[0, pts.length - 1]];
+    while (stack.length) {
+      const [a, b] = stack.pop();
+      const [ax, ay] = pts[a], [bx, by] = pts[b];
+      const dx = bx - ax, dy = by - ay;
+      const len = Math.hypot(dx, dy) || 1;
+      let dmax = 0, idx = -1;
+      for (let i = a + 1; i < b; i++) {
+        const d = Math.abs((pts[i][0] - ax) * dy - (pts[i][1] - ay) * dx) / len;
+        if (d > dmax) { dmax = d; idx = i; }
+      }
+      if (dmax > eps && idx > 0) { keep[idx] = 1; stack.push([a, idx], [idx, b]); }
+    }
+    const out = [];
+    for (let i = 0; i < pts.length; i++) if (keep[i]) out.push(i);
+    return out;
+  }
+
+  function cornersToBudget(pts, target) {
+    let lo = 0.05, hi = 60, out = [];
+    for (let i = 0; i < 36; i++) {
+      const mid = (lo + hi) / 2;
+      out = rdpIdx(pts, mid);
+      if (out.length > target) lo = mid; else hi = mid;
+    }
+    return rdpIdx(pts, hi);
+  }
+
+  // Corner-first sampling. RDP alone piles every dot onto corners and leaves
+  // long straight runs bare, which is unsolvable; so keep the corners for
+  // fidelity, then spend the rest of the budget evenly along arc length.
+  //
+  // CORNER_SHARE is the balance between the two, and it was measured rather
+  // than guessed. Sweeping it over every subject at 40/80/150 dots: 0.45 gives
+  // a mean deviation of 4.58 from the true outline, 0.60 gives 3.83 with the
+  // largest gap still only 1.8x the typical one, and 0.80 is more accurate
+  // again but starts leaving bare stretches. Pure RDP (1.0) is the most
+  // accurate and the least solvable - its largest gap is 6.3x typical.
+  const CORNER_SHARE = 0.6;
+
+  function sample(pts, target) {
+    const corners = cornersToBudget(pts, Math.max(4, Math.round(target * CORNER_SHARE)));
+
+    const cum = [0];
+    for (let i = 1; i < pts.length; i++)
+      cum[i] = cum[i-1] + Math.hypot(pts[i][0] - pts[i-1][0], pts[i][1] - pts[i-1][1]);
+
+    const segs = [];
+    for (let i = 0; i < corners.length - 1; i++)
+      segs.push({ a: corners[i], b: corners[i+1], len: cum[corners[i+1]] - cum[corners[i]], n: 0, frac: 0 });
+    if (!segs.length) return pts.slice(0, target);
+
+    const total = segs.reduce((s, x) => s + x.len, 0) || 1;
+    const extra = Math.max(0, target - corners.length);
+    for (const s of segs) {
+      const want = (s.len / total) * extra;
+      s.n = Math.floor(want);
+      s.frac = want - s.n;
+    }
+    let left = extra - segs.reduce((s, x) => s + x.n, 0);
+    const byFrac = segs.slice().sort((p, q) => q.frac - p.frac);
+    for (let i = 0; i < left; i++) byFrac[i % byFrac.length].n++;
+
+    const out = [];
+    for (const s of segs) {
+      out.push(pts[s.a]);
+      for (let j = 1; j <= s.n; j++) {
+        const want = cum[s.a] + (s.len * j) / (s.n + 1);
+        let lo = s.a, hi = s.b;
+        while (lo < hi) { const m = (lo + hi) >> 1; if (cum[m] < want) lo = m + 1; else hi = m; }
+        // Interpolate along the segment rather than snapping to a stored
+        // vertex: snapping capped the dot count at the traced resolution and
+        // left the spacing lumpy.
+        const i1 = Math.max(s.a, lo), i0 = Math.max(s.a, i1 - 1);
+        const span = cum[i1] - cum[i0];
+        const f = span > 0 ? (want - cum[i0]) / span : 0;
+        out.push([
+          pts[i0][0] + (pts[i1][0] - pts[i0][0]) * f,
+          pts[i0][1] + (pts[i1][1] - pts[i0][1]) * f
+        ]);
+      }
+    }
+    return out;
+  }
+
+  // Drop dots that ended up too close to their neighbour to number legibly.
+  function enforceGap(dots, minGap) {
+    const out = [dots[0]];
+    for (let i = 1; i < dots.length; i++) {
+      const p = out[out.length - 1];
+      if (Math.hypot(dots[i][0] - p[0], dots[i][1] - p[1]) >= minGap) out.push(dots[i]);
+    }
+    // The loop closes, so also check last against first.
+    while (out.length > 4) {
+      const a = out[0], b = out[out.length - 1];
+      if (Math.hypot(a[0] - b[0], a[1] - b[1]) >= minGap) break;
+      out.pop();
+    }
+    return out;
+  }
+
+  // Sampling puts dots on every corner, so some land closer together than
+  // minGap and get dropped - which on its own leaves us well short of the count
+  // asked for. Ask for extra and re-check until the kept count catches up.
+  function dotsFor(pts, target, gap) {
+    let budget = target;
+    let dots = enforceGap(sample(pts, budget), gap);
+    for (let i = 0; i < 6 && dots.length < target; i++) {
+      budget = Math.min(Math.round(budget + (target - dots.length) * 1.2 + 2), target * 4);
+      const next = enforceGap(sample(pts, budget), gap);
+      if (next.length <= dots.length) break;
+      dots = next;
+    }
+    // Never trim to hit the number exactly: these dots form a closed loop, and
+    // dropping the tail would cut a chord straight across the picture.
+    return dots;
+  }
+
+  function build(shape, preset, areaW, areaH, rand) {
+    const angle = (rand() * 2 - 1) * 0.18;          // +/- ~10 degrees
+    const mirror = rand() < 0.5;
+
+    // Harder puzzles reveal more of the interior detail, so the picture gets
+    // genuinely more intricate rather than just more densely dotted.
+    const use = shape.parts.slice(0, Math.max(1, preset.maxParts));
+    const placed = place(use, areaW, areaH, angle, mirror);
+
+    const perims = placed.map(perimeter);
+    const totalPerim = perims.reduce((a, b) => a + b, 0) || 1;
+
+    // A short outline physically cannot carry 300 legible dots.
+    const cap = Math.floor(totalPerim / preset.minGap);
+    const total = Math.max(8, Math.min(preset.dots, cap));
+    const gap = preset.minGap * 0.72;
+
+    const parts = [];
+    placed.forEach((pts, i) => {
+      const share = Math.round(total * (perims[i] / totalPerim));
+      // A part with a handful of dots reads as stray marks, not as a shape.
+      if (i > 0 && share < 7) return;
+
+      let dots = dotsFor(pts, Math.max(5, share), gap);
+      if (dots.length < (i === 0 ? 8 : 6)) return;
+
+      // Randomise where numbering starts and which way it runs.
+      const start = Math.floor(rand() * dots.length);
+      dots = dots.slice(start).concat(dots.slice(0, start));
+      if (rand() < 0.5) dots = [dots[0]].concat(dots.slice(1).reverse());
+
+      parts.push(dots);
+    });
+
+    return { parts, count: parts.reduce((s, p) => s + p.length, 0) };
+  }
+
+  // -------------------------------------------------------------- drawing
+  function centroid(pts) {
+    let cx = 0, cy = 0;
+    for (const [x, y] of pts) { cx += x; cy += y; }
+    return [cx / pts.length, cy / pts.length];
+  }
+
+  function renderPuzzle(model, preset, areaW, areaH) {
+    const fs = preset.num;
+    const placed = [];
+    let out = "";
+    let seq = 0;            // numbering runs continuously across the parts
+
+    for (const dots of model.parts) {
+    const [cx, cy] = centroid(dots);
+
+    dots.forEach(([x, y], i) => {
+      const label = String(++seq);
+      const p = dots[(i - 1 + dots.length) % dots.length];
+      const q = dots[(i + 1) % dots.length];
+
+      // Outward normal of the local tangent, flipped to face away from centre.
+      let nx = -(q[1] - p[1]), ny = q[0] - p[0];
+      const n = Math.hypot(nx, ny) || 1;
+      nx /= n; ny /= n;
+      if (nx * (x - cx) + ny * (y - cy) < 0) { nx = -nx; ny = -ny; }
+
+      // Find a clear spot for the number. Straight out along the normal is the
+      // first choice, but in dense detail every neighbour pushes out the same
+      // way and they collide anyway - so also sweep the offset around the dot,
+      // and if nothing is truly clear, take whichever position overlaps least.
+      const halfW = label.length * fs * 0.32, halfH = fs * 0.5;
+      const overlap = (px, py) => {
+        let worst = 0;
+        for (const b of placed) {
+          const ox = (b.hw + halfW + 0.35) - Math.abs(b.x - px);
+          const oy = (b.hh + halfH + 0.35) - Math.abs(b.y - py);
+          if (ox > 0 && oy > 0) worst = Math.max(worst, Math.min(ox, oy));
+        }
+        return worst;
+      };
+
+      let lx = x + nx * fs * 1.15, ly = y + ny * fs * 1.15;
+      let bestScore = Infinity;
+      outer:
+      for (const dist of [fs * 1.15, fs * 1.75, fs * 2.4, fs * 3.1, fs * 4.0]) {
+        for (const turn of [0, 0.42, -0.42, 0.85, -0.85, 1.3, -1.3]) {
+          const c = Math.cos(turn), s = Math.sin(turn);
+          const px = x + (nx * c - ny * s) * dist;
+          const py = y + (nx * s + ny * c) * dist;
+          const score = overlap(px, py);
+          if (score < bestScore) { bestScore = score; lx = px; ly = py; }
+          if (score === 0) break outer;
+        }
+      }
+      // Keep numbers on the paper even if that means a tighter fit.
+      lx = Math.min(Math.max(lx, halfW), areaW - halfW);
+      ly = Math.min(Math.max(ly, halfH), areaH - halfH);
+      placed.push({ x: lx, y: ly, hw: halfW, hh: halfH });
+
+      out += `<circle cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="${preset.dot}" fill="#000"/>`;
+      out += `<text x="${lx.toFixed(2)}" y="${ly.toFixed(2)}" font-size="${fs}" ` +
+             `text-anchor="middle" dominant-baseline="central" ` +
+             `font-family="ui-sans-serif, system-ui, sans-serif" ` +
+             `${i === 0 ? 'font-weight="700"' : ''} fill="#000">${label}</text>`;
+    });
+
+    // Ring the first dot of every part: that is where you lift the pencil and
+    // start a new closed loop.
+    const [sx, sy] = dots[0];
+    out += `<circle cx="${sx.toFixed(2)}" cy="${sy.toFixed(2)}" r="${preset.dot * 3.2}" ` +
+           `fill="none" stroke="#000" stroke-width="0.3"/>`;
+    }
+
+    return svgWrap(out, areaW, areaH);
+  }
+
+  function renderAnswer(model, areaW, areaH) {
+    const paths = model.parts.map(dots => {
+      const d = dots.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(2)} ${y.toFixed(2)}`).join("");
+      return `<path d="${d}Z" fill="none" stroke="#111" stroke-width="0.7" ` +
+             `stroke-linejoin="round" stroke-linecap="round"/>`;
+    }).join("");
+    return svgWrap(paths, areaW, areaH);
+  }
+
+  const svgWrap = (inner, w, h) =>
+    `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet" ` +
+    `xmlns="http://www.w3.org/2000/svg">${inner}</svg>`;
+
+  // ------------------------------------------------------------------ app
+  const el = {
+    subject: document.getElementById("subject"),
+    difficulty: document.getElementById("difficulty"),
+    orientation: document.getElementById("orientation"),
+    seed: document.getElementById("seed"),
+    withAnswer: document.getElementById("withAnswer"),
+    refresh: document.getElementById("refresh"),
+    print: document.getElementById("print"),
+    puzzleArt: document.getElementById("puzzleArt"),
+    puzzleMeta: document.getElementById("puzzleMeta"),
+    puzzleFoot: document.getElementById("puzzleFoot"),
+    answerSheet: document.getElementById("answerSheet"),
+    answerArt: document.getElementById("answerArt"),
+    answerMeta: document.getElementById("answerMeta"),
+    answerTitle: document.getElementById("answerTitle")
+  };
+
+  const pageStyle = document.createElement("style");
+  document.head.appendChild(pageStyle);
+
+  for (const s of SHAPES) {
+    const o = document.createElement("option");
+    o.value = s.name;
+    o.textContent = s.name;
+    el.subject.appendChild(o);
+  }
+
+  function areaFor(orientation) {
+    const paper = PAPER[orientation];
+    return { w: paper.w - PAD * 2, h: paper.h - PAD * 2 - HEAD - FOOT };
+  }
+
+  function readState() {
+    return {
+      subject: el.subject.value,
+      difficulty: el.difficulty.value,
+      orientation: el.orientation.value,
+      seed: el.seed.value.trim().toUpperCase() || randomSeed(),
+      answer: el.withAnswer.checked
+    };
+  }
+
+  function writeHash(s) {
+    const p = new URLSearchParams({ d: s.difficulty, o: s.orientation, s: s.seed });
+    if (s.subject) p.set("t", s.subject);
+    if (s.answer) p.set("ans", "1");
+    history.replaceState(null, "", "#" + p.toString());
+  }
+
+  function readHash() {
+    const p = new URLSearchParams(location.hash.slice(1));
+    if (p.get("d") in PRESETS) el.difficulty.value = p.get("d");
+    if (p.get("o") === "auto" || p.get("o") in PAPER) el.orientation.value = p.get("o");
+    if (p.get("s")) el.seed.value = p.get("s").toUpperCase();
+    if (p.get("t") && SHAPES.some(s => s.name === p.get("t"))) el.subject.value = p.get("t");
+    el.withAnswer.checked = p.get("ans") === "1";
+  }
+
+  function draw() {
+    if (!SHAPES.length) {
+      el.puzzleArt.innerHTML =
+        '<p style="font:12pt system-ui;color:#900;padding:10mm">shapes.js failed to load. ' +
+        'Run <code>node tools/build-shapes.mjs</code>, and serve the folder over http:// ' +
+        'if your browser blocks local scripts.</p>';
+      return;
+    }
+
+    const state = readState();
+    el.seed.value = state.seed;
+
+    const preset = PRESETS[state.difficulty];
+    const rand = mulberry32(hashSeed(state.seed));
+
+    // At the higher dot counts, only subjects with real structure are worth
+    // drawing - a simple outline with 160 dots on it is not a puzzle.
+    const pool = SHAPES.filter(s =>
+      s.corners >= preset.minCorners && s.parts.length >= preset.minParts);
+    const shape = state.subject
+      ? SHAPES.find(s => s.name === state.subject)
+      : (pool.length ? pool : SHAPES)[Math.floor(rand() * (pool.length || SHAPES.length))];
+
+    // A wide subject on portrait paper leaves half the sheet empty, so on Auto
+    // the paper turns instead of the picture.
+    const orientation = state.orientation === "auto"
+      ? (aspectOf(shape) > 1.15 ? "landscape" : "portrait")
+      : state.orientation;
+
+    const paper = PAPER[orientation];
+    document.documentElement.style.setProperty("--paper-w", paper.w + "mm");
+    document.documentElement.style.setProperty("--paper-h", paper.h + "mm");
+    pageStyle.textContent = `@page { size: A4 ${orientation}; margin: 0; }`;
+
+    const area = areaFor(orientation);
+    const model = build(shape, preset, area.w, area.h, rand);
+
+    // The subject name is deliberately kept off the puzzle sheet - printing it
+    // would give the answer away.
+    const partNote = model.parts.length > 1 ? ` · ${model.parts.length} PARTS` : "";
+    el.puzzleMeta.textContent =
+      `${state.difficulty.toUpperCase()} · ${model.count} DOTS${partNote} · SEED ${state.seed}`;
+    el.answerMeta.textContent = `SEED ${state.seed}`;
+    el.answerTitle.textContent = "Answer — " + shape.name;
+
+    el.puzzleFoot.textContent = model.parts.length > 1
+      ? "Join the dots in order. At each ringed dot, lift your pencil and start a new shape — close each shape back to its ringed dot. What is it?"
+      : "Start at 1 and join the dots in order, closing the shape at the end. What is it?";
+
+    el.puzzleArt.innerHTML = renderPuzzle(model, preset, area.w, area.h);
+    el.answerSheet.hidden = !state.answer;
+    el.answerArt.innerHTML = state.answer ? renderAnswer(model, area.w, area.h) : "";
+
+    writeHash(state);
+  }
+
+  function newPuzzle() {
+    el.seed.value = randomSeed();
+    draw();
+  }
+
+  el.refresh.addEventListener("click", newPuzzle);
+  el.print.addEventListener("click", () => window.print());
+  for (const id of ["subject", "difficulty", "orientation", "seed", "withAnswer"])
+    el[id].addEventListener("change", draw);
+
+  document.addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+    if (e.key === "r" || e.key === "R") { e.preventDefault(); newPuzzle(); }
+  });
+
+  window.addEventListener("hashchange", () => { readHash(); draw(); });
+
+  readHash();
+  draw();
+})();
+</script>
+</body>
+</html>

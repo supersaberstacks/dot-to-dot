@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>tracing…</title></head>
+<body>
+<!--
+  Build-time only. Rasterises each subject glyph, isolates its silhouette and
+  interior detail, then dumps normalised contours as JSON into #out.
+  build-shapes.mjs drives this headlessly and writes shapes.js from the result.
+
+  This runs ONCE, on one machine. The committed output is what ships, so a
+  seed reproduces the same puzzle everywhere regardless of the local emoji font.
+-->
+<pre id="out"></pre>
+<script>
+// Subjects are chosen for a readable SILHOUETTE with enough internal structure
+// to stay interesting at high dot counts. Featureless blobs (cup, top hat,
+// crescent moon, plain star) were tried and dropped: with 150+ dots the outline
+// gives the answer away before you join anything. Things that shatter into thin
+// legs and antennae (cricket) were dropped too.
+const SUBJECTS = [
+  ["\u{1F41F}", "fish"],        ["\u{1F42C}", "dolphin"],   ["\u{1F988}", "shark"],
+  ["\u{1F433}", "whale"],       ["\u{1F980}", "crab"],
+  ["\u{1F422}", "turtle"],      ["\u{1F40A}", "crocodile"], ["\u{1F98E}", "lizard"],
+  ["\u{1F40D}", "snake"],       ["\u{1F995}", "dinosaur"],  ["\u{1F996}", "t-rex"],
+  ["\u{1F40C}", "snail"],       ["\u{1F98B}", "butterfly"],
+  ["\u{1F41C}", "ant"],         ["\u{1FAB2}", "beetle"],    ["\u{1F577}", "spider"],
+  ["\u{1F982}", "scorpion"],    ["\u{1F41B}", "caterpillar"],
+  ["\u{1F427}", "penguin"],     ["\u{1F986}", "duck"],      ["\u{1F9A2}", "swan"],
+  ["\u{1F989}", "owl"],         ["\u{1F413}", "rooster"],   ["\u{1F985}", "eagle"],
+  ["\u{1F99C}", "parrot"],      ["\u{1F9A9}", "flamingo"],
+  ["\u{1F98A}", "fox"],         ["\u{1F43A}", "wolf"],      ["\u{1F98C}", "deer"],
+  ["\u{1F98D}", "gorilla"],     ["\u{1F999}", "llama"],
+  ["\u{1F418}", "elephant"],    ["\u{1F992}", "giraffe"],   ["\u{1F42A}", "camel"],
+  ["\u{1F993}", "zebra"],       ["\u{1F984}", "unicorn"],   ["\u{1F40E}", "horse"],
+  ["\u{1F416}", "pig"],         ["\u{1F411}", "sheep"],     ["\u{1F404}", "cow"],
+  ["\u{1F407}", "rabbit"],      ["\u{1F43F}", "squirrel"],  ["\u{1F994}", "hedgehog"],
+  ["\u{1F987}", "bat"],         ["\u{1F9A5}", "sloth"],
+  ["\u{1F333}", "tree"],        ["\u{1F334}", "palm tree"], ["\u{1F335}", "cactus"],
+  ["\u{1F344}", "mushroom"],    ["\u{1F33B}", "sunflower"], ["\u{1F337}", "tulip"],
+  ["\u{1F339}", "rose"],        ["\u{1F341}", "maple leaf"],["\u{1F34D}", "pineapple"],
+  ["\u{1F347}", "grapes"],      ["\u{1F353}", "strawberry"],
+  ["\u{1F697}", "car"],         ["\u{1F682}", "train"],     ["\u{1F69C}", "tractor"],
+  ["\u{1F692}", "fire engine"], ["\u{1F3CD}", "motorcycle"],["\u{1F6B2}", "bicycle"],
+  ["\u{26F5}", "sailboat"],     ["\u{1F6A2}", "ship"],      ["\u{1F681}", "helicopter"],
+  ["\u{1F680}", "rocket"],      ["\u{2708}", "aeroplane"],  ["\u{1F3F0}", "castle"],
+  ["\u{1F3E0}", "house"],       ["\u{26F2}", "fountain"],
+  ["\u{2602}", "umbrella"],     ["\u{2693}", "anchor"],     ["\u{1F511}", "key"],
+  ["\u{1F3B8}", "guitar"],      ["\u{1F3B7}", "saxophone"],
+  ["\u{1F3BA}", "trumpet"],     ["\u{1F916}", "robot"],
+  ["\u{1F9F8}", "teddy bear"],  ["\u{1F3AA}", "circus tent"]
+];
+
+const RASTER = 1024;    // trace resolution
+const EPS = 0.55;       // RDP tolerance in raster pixels
+// Dots are interpolated along segments at runtime, so storing more vertices
+// than the dot budget can use just inflates shapes.js for no visible gain.
+const MAX_PTS = 240;    // cap for the silhouette
+const MAX_DETAIL = 120; // cap for an interior part
+const MAX_PARTS = 6;    // outline plus up to five interior details
+const MIN_PART = 0.02;  // a colour region must cover this share of the glyph
+// Holes earn a lower bar than colour regions. A guitar's sound hole or a key's
+// bow is small but unmistakably part of the drawing, whereas a small colour
+// patch is usually just shading.
+const MIN_HOLE = 0.008;
+// How taut an outline is: the perimeter of its convex hull divided by its own
+// perimeter. A clean shape - round, rectangular, even a C-shaped face plate
+// with a visor cut out of it - stays near 1. A band of gradient shading
+// wanders, so its own perimeter dwarfs the hull's and the ratio collapses.
+//
+// This replaced a circularity test, which measured roundness rather than
+// wander and so rejected any feature that simply wasn't round. It was throwing
+// away a robot's whole face while keeping three 2% scraps.
+// Neither measure separates features from shading on its own, and they overlap:
+// a robot's visor scores 0.27 circularity / 0.81 tautness, a duck's wavy
+// shading band 0.29 / 0.76. Requiring both keeps the panels, windows and
+// visors while dropping the wavy bands; a big flat car panel at 0.74 tautness
+// is the notable casualty. Perfect separation is not on offer here.
+const MIN_TAUT = 0.78;
+const MIN_CIRC = 0.18;
+// Shading along a body's edge survives both tests above: it is taut and not
+// especially thin, it just runs alongside the outline. Drawing it gives a
+// camel a second contour a few millimetres inside the first, which reads as a
+// mistake. If most of a part sits on the silhouette, it is not a feature.
+const MAX_HUG = 0.55;
+
+// Rasterise once and return the alpha channel plus a coarsely quantised colour
+// index per pixel. The colour bands are what give us interior detail - an eye,
+// a window, a wheel - which the alpha channel alone cannot see.
+function raster(ch, size) {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d", { willReadFrequently: true });
+  g.font = `${Math.floor(size * 0.8)}px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",sans-serif`;
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.fillText(ch, size / 2, size / 2);
+  const d = g.getImageData(0, 0, size, size).data;
+
+  const alpha = new Uint8Array(size * size);   // hard mask, for components
+  const soft = new Float32Array(size * size);  // 0..1 coverage, for contouring
+  const col = new Int16Array(size * size).fill(-1);
+  for (let i = 0; i < size * size; i++) {
+    const a = d[i * 4 + 3];
+    soft[i] = a / 255;
+    if (a <= 128) continue;
+    alpha[i] = 1;
+    // 3 levels per channel. Finer than this and shading noise fragments the
+    // glyph into dozens of useless slivers.
+    const r = Math.min(2, (d[i * 4] / 86) | 0);
+    const gr = Math.min(2, (d[i * 4 + 1] / 86) | 0);
+    const b = Math.min(2, (d[i * 4 + 2] / 86) | 0);
+    col[i] = r * 9 + gr * 3 + b;
+  }
+  return { alpha, soft, col };
+}
+
+function largestBlob(bin, size) {
+  const lab = new Int32Array(size * size).fill(-1);
+  const q = new Int32Array(size * size);
+  let best = -1, bestN = 0, id = 0;
+  for (let s = 0; s < size * size; s++) {
+    if (!bin[s] || lab[s] !== -1) continue;
+    let h = 0, t = 0, n = 0;
+    q[t++] = s; lab[s] = id;
+    while (h < t) {
+      const p = q[h++]; n++;
+      const x = p % size, y = (p / size) | 0;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= size || ny >= size) continue;
+        const np = ny * size + nx;
+        if (bin[np] && lab[np] === -1) { lab[np] = id; q[t++] = np; }
+      }
+    }
+    if (n > bestN) { bestN = n; best = id; }
+    id++;
+  }
+  const out = new Uint8Array(size * size);
+  for (let i = 0; i < size * size; i++) out[i] = lab[i] === best ? 1 : 0;
+  return { bin: out, area: bestN };
+}
+
+// Connected regions of equal quantised colour, largest first.
+function colourRegions(col, alpha, size, minArea) {
+  const lab = new Int32Array(size * size).fill(-1);
+  const q = new Int32Array(size * size);
+  const regions = [];
+  let id = 0;
+  for (let s = 0; s < size * size; s++) {
+    if (!alpha[s] || lab[s] !== -1) continue;
+    const c = col[s];
+    let h = 0, t = 0, n = 0;
+    q[t++] = s; lab[s] = id;
+    const cells = [];
+    while (h < t) {
+      const p = q[h++]; n++; cells.push(p);
+      const x = p % size, y = (p / size) | 0;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= size || ny >= size) continue;
+        const np = ny * size + nx;
+        if (alpha[np] && lab[np] === -1 && col[np] === c) { lab[np] = id; q[t++] = np; }
+      }
+    }
+    if (n >= minArea) regions.push({ area: n, cells });
+    id++;
+  }
+  regions.sort((a, b) => b.area - a.area);
+  return regions;
+}
+
+// ---------------------------------------------------------------- contouring
+//
+// Tracing pixel-by-pixel around a binary mask bakes a one-pixel staircase into
+// every edge, and simplifying that staircase is what made earlier outlines look
+// faceted. Marching squares interpolates each crossing along the cell edge
+// instead, so a smooth glyph edge comes out as a smooth curve.
+
+// Crop to the mask's bounding box (contouring the whole 1024 grid for a small
+// eye would be 1M cells of nothing) and soften into a continuous field.
+function field(cells, size, soft, passes) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of cells) {
+    const x = p % size, y = (p / size) | 0;
+    if (x < x0) x0 = x; if (x > x1) x1 = x;
+    if (y < y0) y0 = y; if (y > y1) y1 = y;
+  }
+  const PAD = 3;
+  x0 = Math.max(0, x0 - PAD); y0 = Math.max(0, y0 - PAD);
+  x1 = Math.min(size - 1, x1 + PAD); y1 = Math.min(size - 1, y1 + PAD);
+
+  const w = x1 - x0 + 1, h = y1 - y0 + 1;
+  let a = new Float32Array(w * h);
+  for (const p of cells) {
+    const x = (p % size) - x0, y = ((p / size) | 0) - y0;
+    // Where we have the glyph's own antialiased coverage, use it: it carries
+    // sub-pixel edge information a hard mask has thrown away.
+    a[y * w + x] = soft ? Math.max(0.5, soft[p]) : 1;
+  }
+
+  const b = new Float32Array(w * h);
+  for (let pass = 0; pass < passes; pass++) {
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const l = x > 0 ? a[y * w + x - 1] : a[y * w + x];
+        const r = x < w - 1 ? a[y * w + x + 1] : a[y * w + x];
+        b[y * w + x] = (l + 2 * a[y * w + x] + r) / 4;
+      }
+    }
+    for (let x = 0; x < w; x++) {
+      for (let y = 0; y < h; y++) {
+        const u = y > 0 ? b[(y - 1) * w + x] : b[y * w + x];
+        const d = y < h - 1 ? b[(y + 1) * w + x] : b[y * w + x];
+        a[y * w + x] = (u + 2 * b[y * w + x] + d) / 4;
+      }
+    }
+  }
+  return { f: a, w, h, x0, y0 };
+}
+
+function marchingSquares(F, level) {
+  const { f, w, h, x0, y0 } = F;
+  const segs = [];
+  const at = (x, y) => f[y * w + x];
+
+  for (let y = 0; y < h - 1; y++) {
+    for (let x = 0; x < w - 1; x++) {
+      const a = at(x, y), b = at(x + 1, y), c = at(x + 1, y + 1), d = at(x, y + 1);
+      let code = 0;
+      if (a >= level) code |= 1;
+      if (b >= level) code |= 2;
+      if (c >= level) code |= 4;
+      if (d >= level) code |= 8;
+      if (code === 0 || code === 15) continue;
+
+      const mix = (v0, v1) => (level - v0) / (v1 - v0);
+      const T = () => [x0 + x + mix(a, b), y0 + y];
+      const R = () => [x0 + x + 1, y0 + y + mix(b, c)];
+      const B = () => [x0 + x + mix(d, c), y0 + y + 1];
+      const L = () => [x0 + x, y0 + y + mix(a, d)];
+      const centre = (a + b + c + d) / 4 >= level;
+
+      switch (code) {
+        case 1: case 14: segs.push([L(), T()]); break;
+        case 2: case 13: segs.push([T(), R()]); break;
+        case 3: case 12: segs.push([L(), R()]); break;
+        case 4: case 11: segs.push([R(), B()]); break;
+        case 6: case 9:  segs.push([T(), B()]); break;
+        case 7: case 8:  segs.push([L(), B()]); break;
+        // Saddles: the centre decides which pair of corners is joined.
+        case 5:
+          if (centre) { segs.push([T(), R()]); segs.push([L(), B()]); }
+          else { segs.push([L(), T()]); segs.push([R(), B()]); }
+          break;
+        case 10:
+          if (centre) { segs.push([L(), T()]); segs.push([R(), B()]); }
+          else { segs.push([T(), R()]); segs.push([L(), B()]); }
+          break;
+      }
+    }
+  }
+  return segs;
+}
+
+// Marching squares emits unordered segments; a dot-to-dot needs an ordered
+// loop. Adjacent cells share an edge crossing exactly, so endpoints match.
+function chainLoops(segs) {
+  const key = p => p[0].toFixed(4) + "," + p[1].toFixed(4);
+  const map = new Map();
+  segs.forEach((s, i) => {
+    for (const e of [0, 1]) {
+      const k = key(s[e]);
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push([i, e]);
+    }
+  });
+
+  const used = new Uint8Array(segs.length);
+  const loops = [];
+  for (let i = 0; i < segs.length; i++) {
+    if (used[i]) continue;
+    used[i] = 1;
+    const loop = [segs[i][0], segs[i][1]];
+    const startKey = key(segs[i][0]);
+    let curKey = key(segs[i][1]);
+    let guard = 0;
+    while (curKey !== startKey && guard++ < segs.length + 4) {
+      let next = -1, end = 0;
+      for (const [j, e] of (map.get(curKey) || [])) {
+        if (!used[j]) { next = j; end = e; break; }
+      }
+      if (next < 0) break;
+      used[next] = 1;
+      const other = segs[next][1 - end];
+      loop.push(other);
+      curKey = key(other);
+    }
+    if (loop.length >= 12) loops.push(loop);
+  }
+  return loops;
+}
+
+function polyArea(pts) {
+  let s = 0;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++)
+    s += pts[j][0] * pts[i][1] - pts[i][0] * pts[j][1];
+  return Math.abs(s) / 2;
+}
+
+function polyLen(pts) {
+  let s = 0;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++)
+    s += Math.hypot(pts[i][0] - pts[j][0], pts[i][1] - pts[j][1]);
+  return s;
+}
+
+function distToPoly(p, poly) {
+  let best = Infinity;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[j], b = poly[i];
+    const vx = b[0] - a[0], vy = b[1] - a[1];
+    const wx = p[0] - a[0], wy = p[1] - a[1];
+    const L = vx * vx + vy * vy;
+    let t = L > 0 ? (wx * vx + wy * vy) / L : 0;
+    t = Math.max(0, Math.min(1, t));
+    const d = Math.hypot(wx - vx * t, wy - vy * t);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+// Andrew's monotone chain.
+function convexHull(pts) {
+  const p = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  if (p.length < 3) return p;
+  const cross = (o, a, b) =>
+    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const half = (src) => {
+    const h = [];
+    for (const q of src) {
+      while (h.length >= 2 && cross(h[h.length - 2], h[h.length - 1], q) <= 0) h.pop();
+      h.push(q);
+    }
+    h.pop();
+    return h;
+  };
+  return half(p).concat(half(p.slice().reverse()));
+}
+
+function centroidOf(pts) {
+  let x = 0, y = 0;
+  for (const p of pts) { x += p[0]; y += p[1]; }
+  return [x / pts.length, y / pts.length];
+}
+
+function tidyLoop(loop) {
+  // A chained loop ends where it started. Leave that duplicate in and RDP
+  // measures every deviation from a zero-length line and keeps nothing.
+  const first = loop[0], last = loop[loop.length - 1];
+  if (Math.hypot(first[0] - last[0], first[1] - last[1]) < 1e-6) loop = loop.slice(0, -1);
+  if (loop.length < 12) return null;
+
+  // RDP always keeps its two endpoints, so the seam is wherever the walk began
+  // - an arbitrary spot that can end up mid-curve. Anchor it at the leftmost
+  // point instead, which is an extreme of the shape and cheap to keep.
+  let m = 0;
+  for (let i = 1; i < loop.length; i++)
+    if (loop[i][0] < loop[m][0] || (loop[i][0] === loop[m][0] && loop[i][1] < loop[m][1])) m = i;
+  return loop.slice(m).concat(loop.slice(0, m));
+}
+
+// Every closed loop in a mask, largest enclosed area first. The first is the
+// outline; the rest are HOLES, and they matter - the hole in a key's bow, a
+// guitar's sound hole, the gap inside a ferris wheel's rim. Keeping only the
+// biggest loop threw all of those away and left flat, lifeless shapes.
+function loopsOf(cells, size, soft, passes) {
+  const loops = [];
+  for (const raw of chainLoops(marchingSquares(field(cells, size, soft, passes), 0.5))) {
+    const l = tidyLoop(raw);
+    if (l) loops.push(l);
+  }
+  loops.sort((a, b) => polyArea(b) - polyArea(a));
+  return loops;
+}
+
+function rdp(pts, eps) {
+  if (pts.length < 3) return pts.slice();
+  const keep = new Uint8Array(pts.length);
+  keep[0] = keep[pts.length - 1] = 1;
+  const stack = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop();
+    const [ax, ay] = pts[a], [bx, by] = pts[b];
+    const dx = bx - ax, dy = by - ay;
+    const len = Math.hypot(dx, dy) || 1;
+    let dmax = 0, idx = -1;
+    for (let i = a + 1; i < b; i++) {
+      const d = Math.abs((pts[i][0] - ax) * dy - (pts[i][1] - ay) * dx) / len;
+      if (d > dmax) { dmax = d; idx = i; }
+    }
+    if (dmax > eps && idx > 0) { keep[idx] = 1; stack.push([a, idx], [idx, b]); }
+  }
+  return pts.filter((_, i) => keep[i]);
+}
+
+function simplify(raw, cap, eps0) {
+  let eps = eps0 || EPS;
+  let pts = rdp(raw, eps);
+  while (pts.length > cap && eps < 40) { eps *= 1.25; pts = rdp(raw, eps); }
+  return pts;
+}
+
+const shapes = [];
+const rejected = [];
+
+for (const [ch, name] of SUBJECTS) {
+  const { alpha, soft, col } = raster(ch, RASTER);
+
+  const outer = largestBlob(alpha, RASTER);
+  // Too little ink means the glyph is missing from the font entirely.
+  if (outer.area < RASTER * RASTER * 0.02) { rejected.push([name, "empty/tiny glyph"]); continue; }
+
+  const outerCells = [];
+  for (let i = 0; i < RASTER * RASTER; i++) if (outer.bin[i]) outerCells.push(i);
+
+  // One blur pass for the silhouette: the glyph's own antialiasing already
+  // carries the sub-pixel edge, so heavy smoothing would only erode corners.
+  const outerLoops = loopsOf(outerCells, RASTER, soft, 1);
+  if (!outerLoops.length || outerLoops[0].length < 40) {
+    rejected.push([name, "degenerate contour"]); continue;
+  }
+  const outerLoop = outerLoops[0];
+  const outerSimple = simplify(outerLoop, MAX_PTS);
+
+  // Everything is fitted to the page from the silhouette's box, so a part
+  // reaching outside it would print off the sheet. Nothing should now, but the
+  // check is cheap and the failure is invisible until someone prints it.
+  let oX0 = Infinity, oY0 = Infinity, oX1 = -Infinity, oY1 = -Infinity;
+  for (const [x, y] of outerLoop) {
+    if (x < oX0) oX0 = x; if (x > oX1) oX1 = x;
+    if (y < oY0) oY0 = y; if (y > oY1) oY1 = y;
+  }
+  const oW = oX1 - oX0, oH = oY1 - oY0;
+  const slack = Math.max(oW, oH) * 0.01;
+
+  // Candidates for interior parts: holes punched through the silhouette, plus
+  // the boundaries of flat colour regions. Both are ranked together by area so
+  // the biggest, most legible features win the limited part budget.
+  const candidates = outerLoops.slice(1).map(loop => ({ loop, kind: "hole" }));
+
+  // Gate colour regions on the silhouette blob, not the whole glyph. Gating on
+  // the glyph let a region belonging to a detached blob (the jets above a
+  // fountain's bowl) become a "part" sitting outside the very outline the page
+  // fit is computed from.
+  const regions = colourRegions(col, outer.bin, RASTER, Math.round(outer.area * MIN_PART));
+  for (const r of regions) {
+    // Three passes here: a colour region is a hard mask with no antialiasing
+    // and often a soft transition underneath, so it needs real smoothing.
+    const rl = loopsOf(r.cells, RASTER, null, 3);
+    if (rl.length) candidates.push({ loop: rl[0], kind: "colour" });
+  }
+
+  // Measure candidates on their SIMPLIFIED outline, not the raw traced one.
+  // A raw contour's length is inflated by pixel-level wiggle, and the longer
+  // the boundary the worse the inflation - which quietly made the compactness
+  // test harshest on exactly the big features worth keeping. A robot's face
+  // plate scored 0.27 raw and comfortably passes once simplified.
+  for (const c of candidates) {
+    // Interior parts are simplified harder than the silhouette. A colour
+    // boundary inside a glyph is often a soft, dithered transition rather than
+    // a drawn edge - a camel's two-tone flank is a real feature, but traced at
+    // silhouette precision it comes out as a jagged rip. Coarser simplification
+    // keeps the feature and loses the jaggedness; geometric detail like a
+    // window or a wheel is unaffected, being made of long straight runs.
+    c.pts = simplify(c.loop, MAX_DETAIL, c.kind === "colour" ? EPS * 3 : EPS);
+    c.area = polyArea(c.pts);
+    c.len = polyLen(c.pts);
+    c.mid = centroidOf(c.pts);
+    c.taut = polyLen(convexHull(c.pts)) / (c.len || 1);
+    const near = Math.max(oW, oH) * 0.02;
+    c.hug = c.pts.filter(p => distToPoly(p, outerSimple) < near).length / c.pts.length;
+  }
+  candidates.sort((a, b) => b.area - a.area);
+
+  const contours = [outerSimple];
+  const marks = [{ c: centroidOf(outerLoop), a: polyArea(outerLoop) }];
+
+  // Why each candidate lived or died. Not shipped - build-shapes.mjs strips it,
+  // and prints it on demand so a disappointing subject can be diagnosed instead
+  // of guessed at.
+  const diag = [];
+
+  for (const c of candidates) {
+    const share = c.area / outer.area;
+    const circ = (4 * Math.PI * c.area) / (c.len * c.len);
+    const note = why => diag.push({
+      kind: c.kind, share: +share.toFixed(4), circ: +circ.toFixed(3),
+      taut: +c.taut.toFixed(3), hug: +c.hug.toFixed(2), why
+    });
+
+    if (contours.length >= MAX_PARTS) { note("budget full"); continue; }
+    if (c.pts.length < 8) { note("too few points"); continue; }
+    if (c.pts.some(([x, y]) =>
+      x < oX0 - slack || x > oX1 + slack || y < oY0 - slack || y > oY1 + slack)) {
+      rejected.push([name, "part outside the silhouette"]);
+      note("outside silhouette");
+      continue;
+    }
+    if (c.area < outer.area * (c.kind === "hole" ? MIN_HOLE : MIN_PART)) { note("too small"); continue; }
+    if (c.area > outer.area * 0.72) { note("retraces silhouette"); continue; }
+
+    // Reject shading. A real feature - an eye, a window, a wheel, a face plate -
+    // has a taut outline however angular it is. A band of gradient shading
+    // wanders, and dotting it would put numbers on a feature that isn't really
+    // there.
+    if (c.taut < MIN_TAUT) { note("wanders"); continue; }
+    if (circ < MIN_CIRC) { note("too thin"); continue; }
+    if (c.kind === "colour" && c.hug > MAX_HUG) { note("hugs outline"); continue; }
+
+    // Skip a part that essentially duplicates one we already have - a colour
+    // region and a hole often describe the same feature.
+    const dup = marks.some(m =>
+      Math.hypot(m.c[0] - c.mid[0], m.c[1] - c.mid[1]) < RASTER * 0.03 &&
+      Math.abs(m.a - c.area) / Math.max(m.a, c.area) < 0.2);
+    if (dup) { note("duplicate"); continue; }
+
+    contours.push(c.pts);
+    marks.push({ c: c.mid, a: c.area });
+    note("KEPT");
+  }
+
+  // One transform for every part, derived from the silhouette, so the interior
+  // detail stays registered to the outline.
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of contours[0]) {
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+  }
+  const w = maxX - minX, h = maxY - minY;
+  const k = 1000 / Math.max(w, h);
+  const ox = (1000 - w * k) / 2, oy = (1000 - h * k) / 2;
+
+  const parts = contours.map(pts => {
+    const flat = [];
+    for (const [x, y] of pts)
+      flat.push(Math.round((x - minX) * k + ox), Math.round((y - minY) * k + oy));
+    let perim = 0;
+    for (let i = 2; i < flat.length; i += 2)
+      perim += Math.hypot(flat[i] - flat[i - 2], flat[i + 1] - flat[i - 1]);
+    perim += Math.hypot(flat[0] - flat[flat.length - 2], flat[1] - flat[flat.length - 1]);
+    return { perim: Math.round(perim), p: flat };
+  });
+
+  // How much genuine structure the outline has, used to keep featureless
+  // subjects out of the high dot-count difficulties.
+  const corners = rdp(contours[0].map(([x, y]) => [(x - minX) * k, (y - minY) * k]), 26).length;
+
+  shapes.push({ name, corners, parts, diag });
+}
+
+document.getElementById("out").textContent =
+  JSON.stringify({ shapes, rejected }, null, 0);
+document.title = "done";
+</script>
+</body>
+</html>
