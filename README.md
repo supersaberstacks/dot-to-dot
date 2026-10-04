@@ -2,218 +2,209 @@
 
 A single-page site that generates a printable A4 dot-to-dot puzzle. Press
 **New puzzle** for a fresh one, **Print** to put it on paper. No build step and
-no dependencies at runtime — `index.html` plus a generated `shapes.js`.
+no dependencies: `index.html` plus three plain scripts.
+
+| file | what it is |
+| --- | --- |
+| `art.js` | the 38 subjects, drawn by hand as layered shapes |
+| `lineart.js` | turns a drawing into the lines a solver draws |
+| `puzzle.js` | turns those lines into numbered dots |
+| `tools/preview.html` | authoring aid: every drawing, puzzle and statistic at a glance |
 
 ## Run it locally
 
-Open `index.html` in a browser. That's it.
-
-If your browser refuses to load `shapes.js` from `file://` (some do), serve the
-folder instead:
+Open `index.html` in a browser. If your browser refuses to load the scripts
+from `file://` (some do), serve the folder instead:
 
 ```sh
 npx serve .          # or: python -m http.server
 ```
 
-## How the picture is randomised
+## What makes a good dot-to-dot
 
-This is the part that isn't obvious, so it's worth stating plainly: **you cannot
-randomise a recognisable picture.** Recognisability is semantic information a
-random number generator doesn't have — connect random points in order and you
-get a scribble every time.
+Two things, and they pull against each other:
 
-So the picture is *chosen*, and everything else is *randomised*. Each seed picks:
+- **Joined, it has to look like the thing.** That is a question of the
+  drawing, and nothing else. An earlier version traced emoji glyphs into
+  silhouettes; however carefully the tracing was tuned, the result was a blob
+  with colour patches inside it, because an emoji is a painting, not a line
+  drawing.
+- **Unjoined, it must not.** An outline dotted at even spacing is a dotted
+  outline - you can read the subject off it at a glance, and the puzzle is over
+  before it starts.
 
-- which of the 79 subjects you get,
-- the dot count (within the difficulty's budget),
-- a small rotation, mirroring, scale and placement on the page,
-- which dot starts each part, and which way round the numbering runs.
+So the subjects are now drawn by hand as line art, with interior lines - the
+fold of an ear, the line of a leg against a body, a wing over a flank - and
+the dots are placed so that the dot field reads as a scatter until it is
+joined.
 
-Same subject, visibly different sheet every time.
+## How a picture is drawn
 
-The picture is never turned on its side to fill the paper better — a tractor
-lying on its back is much harder to recognise, and recognising it is the whole
-point. Wide subjects get landscape paper instead; that is what **Auto** does.
+Each subject in `art.js` is a stack of simple shapes painted back to front, the
+way a cartoon is inked: a filled shape hides whatever is behind it, and only the
+visible part of each outline survives. A leg in front of a body cuts the body's
+outline where it crosses; an ear in front of a head leaves the head's outline
+ending exactly on the ear's edge. Nobody has to work out those junctions by
+hand, and the drawing never shows construction lines.
 
-### Difficulty adds detail, not just dots
+Shapes can share a group, which makes them one outline - a head, a neck and a
+body built from three simple shapes, with no seams between them. Lines can be
+clipped to a group, so spots, scales and wrinkles can be drawn loosely and
+trimmed to the body.
 
-Dropping 300 dots onto a plain silhouette does not make a harder puzzle — it
-makes an easier one, because the outline becomes obvious before you join
-anything. A crescent moon at 160 dots is not a puzzle at all.
+Every layer is tagged with the difficulty it first appears at. Medium draws the
+subject and its main features. Hard adds secondary detail - toenails, an ear
+fold, the second stripe on a bee - and a little setting: grass, a puddle, a
+gull. Epic adds texture and more of the scene: a giraffe's full set of
+patches, the fence behind the pig, a crescent moon behind the owl.
 
-So difficulty controls two things:
+The scenery is kept inside the subject's own frame. Anything that sticks out
+widens the picture and shrinks the subject on the page: an igloo beside the
+penguin printed it at 59% of its Medium size, and a tree beside the giraffe
+crowded its patches into tiny clusters of numbers. `tools/preview.html#m=stats`
+reports the scale for every subject; all of them now keep at least 83%.
 
-- **How many interior parts are revealed.** Tiny draws the silhouette alone;
-  Epic draws up to six parts, so a rooster gains a comb, a wattle and a wing,
-  and a tractor gains wheels, a cab and an exhaust.
-- **Which subjects are eligible.** Each subject stores a `corners` score
-  measuring how much structure its outline really has, and the higher
-  difficulties also demand a minimum number of interior parts. A swan has
-  plenty of corners but no interior detail, so 167 dots would just retrace its
-  outline — Hard and Epic won't pick it. Epic draws from 29 of the 79 subjects,
-  Hard from 45, Medium from 73.
+## How a picture becomes a puzzle
 
-### Where the 79 subjects come from
+1. **Line art.** `lineart.js` flattens the shapes and works out which parts of
+   each outline are visible at the chosen difficulty.
+2. **Junctions.** Where a line ends on another line, the other line is split
+   there, so both share one dot. Two dots a millimetre apart cannot both carry a
+   legible number, and the solver could not tell which was which.
+3. **Runs.** The lines are chained into runs - what you draw without lifting
+   the pencil - starting from loose ends and, at each junction, carrying on
+   along whichever line turns least, as you would by hand. A closed loop ends
+   back on its first dot, which is how the sheet tells you to close it.
+4. **Dots.** Corners and junctions always get a dot. Curves get as many as they
+   need to stay within a tolerance of the drawn curve; straight lines get one
+   at each end, split only if the gap would make the next number a hunt.
+5. **Numbers.** Numbering runs continuously across the runs. A dot that starts
+   a new run is ringed and its number is bold. A dot shared by two runs shows
+   both numbers, `17/42`.
 
-There are no image files in this repo, and no clipart licensing to worry about.
-The outlines are traced from **emoji glyphs**: `tools/trace.html` rasterises each
-glyph to a canvas, thresholds the alpha channel to a silhouette, keeps the
-largest connected part, and extracts the boundary with **marching squares**,
-simplifying the result with Ramer–Douglas–Peucker.
+## Hiding the picture
 
-Marching squares matters more than it sounds. Walking the boundary pixel by
-pixel bakes a one-pixel staircase into every edge, and simplifying a staircase
-is what makes an outline look faceted. Marching squares interpolates each
-crossing along the cell edge instead, so a smooth glyph edge stays smooth — and
-because the curve is cleaner, RDP needs *fewer* points to describe it. That one
-change cut `shapes.js` by 17% while improving the drawing.
+The dot count is not what makes a puzzle hard to guess - how the dots are
+spread is. Three decisions do most of the work:
 
-Two details are easy to get wrong here:
+- **Dots go where the drawing needs them.** A long smooth back gets a dot every
+  centimetre or so; a paw gets a cluster. The eye groups evenly spaced dots
+  into a line, and uneven spacing defeats that.
+- **Harder puzzles get more drawing, not denser dots.** The curve tolerance is
+  held within a band for each difficulty (0.6-1.2 mm at Medium, 0.28-0.65 mm at
+  Epic). Inside the band it is chosen to bring the count near the target;
+  outside it, never. An earlier version reached Epic's 300 by tightening the
+  tolerance until it got there, and the owl's eyes came out as two perfect
+  dotted rings - the most recognisable thing on the sheet. Epic's extra dots
+  now come from the extra layers in the art.
+- **The interior is dotted too.** Ear folds, leg lines, patches and the setting
+  fill the silhouette with the same scatter as its edge.
 
-- The glyph's own antialiasing is real sub-pixel information, so the silhouette
-  is contoured from the alpha coverage rather than a hard mask. Colour regions
-  have no antialiasing and need a blur pass first.
-- A chained loop ends where it began. Leave that duplicate point in and RDP
-  measures every deviation from a zero-length line and discards the entire
-  shape. The seam is also re-anchored at the leftmost point, since RDP always
-  keeps its two endpoints and the walk's arbitrary start could fall mid-curve.
+Every seed also mirrors the picture at random and tilts it a few degrees. The
+picture is never turned on its side to fill the paper better - a tractor on its
+back is much harder to recognise, and recognising it is the point. Wide subjects
+get landscape paper instead; that is what **Auto** does.
 
-Interior detail comes from two places, ranked together by area:
+| difficulty | dots (min / median / max) | pencil lifts, average |
+| --- | --- | --- |
+| Medium | 64 / 94 / 114 | 8 |
+| Hard | 99 / 145 / 190 | 14 |
+| Epic | 170 / 236 / 300 | 24 |
 
-- **Holes.** Every closed loop in the mask is kept, not just the biggest one.
-  The hole in a key's bow, a guitar's sound hole, the gap inside a wheel rim —
-  discarding those left shapes flat and lifeless. Holes earn a lower size
-  threshold than colour regions, because a small hole is unmistakably part of
-  the drawing while a small colour patch is usually just shading.
-- **Colour regions.** Pixels are quantised to three levels per channel and
-  connected regions of one quantised colour become candidate parts. That is
-  where eyes, windows, wheels and zebra stripes come from.
+The count depends on the drawing - a castle is all corners, a whale is all
+curves - which is why the menu says "about", and the sheet header always
+reports the real count.
 
-Most colour candidates are junk. A band of gradient shading quantises into a
-shape that looks like a feature but isn't, and dotting it puts numbers on
-something that doesn't exist in the picture. Three tests filter them, and it
-took several attempts to find ones that work:
+## Number placement
 
-- **Tautness** — the perimeter of the convex hull over the outline's own
-  perimeter (≥ 0.78). Shading wanders; a real feature doesn't.
-- **Circularity** — `4πA / P²` (≥ 0.18), a floor on extreme slivers.
-- **Edge hugging** — the share of the outline sitting on the silhouette
-  (≤ 0.55). Shading along a body's edge passes both tests above: it is taut and
-  not thin, it just runs alongside the outline, and drawing it gives a camel a
-  second contour a few millimetres inside the first.
+Each number tries 64 spots around its dot - sixteen directions at four
+distances - and takes the cheapest. The preferred direction is down the middle
+of the widest gap between the lines leaving the dot, which is the spot furthest
+from all of them. A number has to read as belonging to its dot and no other,
+and four faults break that, all priced in millimetres:
 
-Circularity alone was the original test, and it was wrong: it measures
-*roundness*, not wander, so it rejected any feature that simply wasn't round.
-It was throwing away a robot's entire face — visor, eye panel, mouth — while
-keeping three 2%-of-glyph scraps. Tautness alone is too permissive and lets the
-wavy bands back in. The two overlap and neither separates cleanly (a robot's
-visor scores 0.27 circularity / 0.81 tautness; a duck's shading band 0.29 /
-0.76), so both are required and a big flat car panel at 0.74 tautness is the
-notable casualty. Perfect separation is not on offer here.
+- another number in the way,
+- a different dot nearer to the number than its own,
+- the number printed over a dot,
+- the number printed where a line will be drawn through it.
 
-Interior parts are also simplified about three times harder than the
-silhouette. A colour boundary inside a glyph is usually a soft, dithered
-transition rather than a drawn edge — a camel's two-tone flank is a real
-feature, but traced at silhouette precision it comes out as a jagged rip.
-Coarser simplification keeps the feature and loses the jaggedness; windows and
-wheels are unaffected, being made of long straight runs. It also cut
-`shapes.js` by a quarter.
+The last one is new, and it matters on a sheet with interior lines: a number
+the solver's pencil line runs straight through is half-erased by the time
+they get to it. One pass places each number knowing only the numbers before
+it, so two refinement passes let every number reconsider against the finished
+layout.
 
-When a subject comes out wrong, don't guess:
+Measured over every subject, difficulty and five seeds, as a share of all
+numbers printed (`tools/preview.html#m=quality`):
 
-```sh
-node tools/build-shapes.mjs --diag robot
+| | over a number | nearer another dot | over a dot | crossed by a line | 3+ numbers on a dot |
+| --- | --- | --- | --- | --- | --- |
+| Medium | 0.00% | 0.04% | 0.00% | 0.10% | 0.14% |
+| Hard | 0.09% | 0.21% | 0.01% | 0.43% | 0.22% |
+| Epic | 0.46% | 0.61% | 0.08% | 0.74% | 0.43% |
+
+A puzzle takes about 10-35 ms to build. The occlusion test once took 80% of
+that time and a full second for the busiest subject; sorting each shape's
+edges into horizontal bands, so a point only tests the edges level with it,
+fixed that.
+
+## Adding or changing a subject
+
+Drawings live in `art.js`. A layer is one of:
+
+| helper | layer |
+| --- | --- |
+| `F(d)` | a filled shape from SVG path data - drawn, and hides what is behind it |
+| `L(d)` | a line - drawn, hides nothing |
+| `M(d)` | a mask - hides what is behind it, never drawn |
+| `E(cx, cy, rx, ry)`, `C(cx, cy, r)` | a filled ellipse or circle |
+
+with options `lv` (first difficulty: 1 Medium, 2 Hard, 3 Epic), `upto`, `g`
+(merge into one outline), `clip` (only draw inside a group), `fill: false`
+(a ring that hides nothing) and `rot`. There are helpers for the common
+pieces - `tube` for tails and necks, `bumpy` for manes and clouds, `spiky`,
+`leaf`, `flower`, `tulip`, `sun`, `gull`, `waves`, `water`, `star`,
+`battlement` - and `mx` mirrors a path, so a pair of wings is written once.
+
+Then open `tools/preview.html`:
+
+```text
+tools/preview.html                    every drawing at all three difficulties
+tools/preview.html#t=elephant         one subject
+tools/preview.html#m=dots&t=owl       the puzzle and answer at each difficulty
+tools/preview.html#m=stats            dots, pencil lifts and scale per subject
+tools/preview.html#m=quality          number placement faults
 ```
 
-prints every candidate part with its area share, circularity, tautness, hug and
-the reason it was kept or dropped.
+**Look at every drawing at every difficulty before committing.** Nothing can
+tell you a drawing is unrecognisable except looking at it. In the line-art view
+the open ends of lines are marked in red; two red marks a hair apart are a
+junction that failed to meet.
 
-Colour regions are gated on the silhouette blob rather than the whole glyph.
-Gating on the glyph let a region belonging to a *detached* blob — the jets above
-a fountain's bowl — become a part sitting outside the very outline the page fit
-is computed from. Parts are also bounds-checked against the silhouette, since
-that failure is invisible until someone prints it.
+Detail that is small on the drawing belongs at a higher difficulty, where dots
+may sit closer together. A loop that cannot fit four dots at a difficulty's
+spacing is left out rather than drawn as a triangle, and a tick shorter than
+the gap between two numbers is dropped.
 
-Tracing runs **once, offline** — never in the visitor's browser. That matters:
-emoji fonts differ across Windows, macOS and Android, so tracing at runtime
-would mean the same seed drew a different animal on a different device. The
-committed `shapes.js` makes a seed reproduce exactly the same puzzle everywhere.
+## Reproducibility
 
-```sh
-node tools/build-shapes.mjs      # rewrites shapes.js, needs Chrome or Edge
-```
-
-Only re-run that when you change the subject list in `tools/trace.html`.
-
-Subjects are picked for a readable *silhouette*, which is not the same thing as
-a readable emoji. A cup, a top hat and a crescent moon collapse into featureless
-blobs; a cricket shatters into thin legs and antennae; coral, corn and a pumpkin
-trace clean outlines but their interiors come out as scribble. A ferris wheel is
-the instructive one — its cabins turn the silhouette into a cog and its spokes
-cannot be captured at all, so it reads as a gear with a circle in it. All were
-tried and dropped.
-
-**If you change the subject list, render every shape with all its parts and look
-at them before committing** — the tracer cannot tell you that a silhouette is
-unrecognisable, and that is the only test that matters.
-
-## Dot placement
-
-Two things make the difference between a solvable puzzle and a mess:
-
-- **Corner-first sampling.** Simplifying the outline to N points puts every dot
-  on a corner and leaves long straight runs completely bare. So 60% of the
-  budget goes to corners for fidelity, and the rest is spread evenly along arc
-  length, interpolating *between* stored vertices rather than snapping to them.
-
-  That 60% was measured, not guessed. Sweeping it across every subject at
-  40/80/150 dots, against mean deviation from the true outline and against the
-  largest gap between consecutive dots:
-
-  | corner share | mean deviation | largest gap ÷ typical |
-  | --- | --- | --- |
-  | 0.45 | 4.58 | 1.49 |
-  | **0.60** | **3.83** | **1.83** |
-  | 0.80 | 2.95 | 2.53 |
-  | 1.00 (pure RDP) | 2.17 | 6.34 |
-
-  Accuracy keeps improving all the way to pure RDP; solvability falls off a
-  cliff. 0.60 takes the accuracy that is free and stops there.
-
-  Weighting the remaining budget by curvature as well was tried and removed: it
-  bought under 1% accuracy and made the spacing less even, because the corner
-  pass has already put dots where the curvature is.
-- **A minimum gap, in millimetres.** Dots closer than the gap are dropped,
-  because two numbers that close cannot both be legible. This caps the dot count
-  on small or simple outlines — a house has perhaps ten real corners — which is
-  why the difficulty menu says "up to". The header always reports the count you
-  actually got.
-
-Numbers are placed outside the outline along the local normal. Where detail is
-dense, every neighbour pushes out the same way and they still collide, so the
-placer also sweeps the offset around the dot and falls back to the position with
-the least overlap. Every part shares one collision map, so interior numbers
-avoid the outline's numbers too.
-
-Numbering runs continuously across the parts — 1 to N, no repeats — and the
-first dot of each part is ringed. That is where you lift the pencil and start a
-new closed loop.
+Nothing depends on fonts or the device: the drawings are numbers in `art.js`,
+so a seed reproduces the same puzzle. The seed is in the URL along with the
+difficulty, paper and subject.
 
 ## Print
 
 Leave margins at **Default** and scale at **100%** (uncheck "Fit to page").
 `@page { size: A4; margin: 0 }` means the sheet prints 1:1. The answer, when
-enabled, prints as page 2 with the subject named — the puzzle sheet deliberately
+enabled, prints as page 2 with the subject named - the puzzle sheet deliberately
 never names it.
 
 ## Known limits
 
-- At **Epic** on an intricate subject, numbers can crowd in fine detail
-  (a rooster's tail feathers). Medium and Hard are the comfortable range.
-- Interior detail is whatever the emoji artist drew as a distinct colour. It is
-  usually the right feature, but it is not an illustrator's choice — a few
-  subjects gain a part that is more "shading boundary" than "feature".
-- The silhouette keeps only the largest connected part of a glyph, so anything
-  detached (steam over a cup, a dotted 'i') is lost.
-- `shapes.js` is ~166 KB. It is plain ASCII and compresses to a fraction of
-  that over HTTP, but it is the bulk of the page weight.
+- Epic averages 24 pencil lifts. Spots, buttons and portholes are separate
+  closed shapes, and every one is a fresh start. The giraffe, with its patches,
+  is the worst at 44.
+- Where several lines meet at one point - an owl's talons on a branch - a dot
+  can carry three or four numbers. It happens on under half a percent of dots
+  at Epic.
+- The subject list is hand-drawn, so it grows only as fast as someone draws.

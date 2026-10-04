@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Line-art preview</title>
+<!--
+  Authoring aid for art.js. Nothing can tell you a drawing is unrecognisable
+  except looking at it, so this puts every drawing in front of you at once.
+
+    tools/preview.html                    line art for every subject, all levels
+    tools/preview.html#t=elephant         one subject
+    tools/preview.html#m=dots&t=owl       the puzzle and answer at each difficulty
+    tools/preview.html#m=stats            dots and pencil lifts, every subject
+
+  Red marks in the line-art view are the open ends of strokes: a pair of them
+  sitting a hair apart is a junction that failed to meet.
+-->
+<style>
+  body { margin: 0; padding: 16px; background: #fff; font: 13px system-ui, sans-serif; color: #111; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; }
+  .cell { border: 1px solid #ddd; padding: 6px; }
+  .cell h3 { margin: 0 0 4px; font-size: 13px; display: flex; justify-content: space-between; }
+  .cell h3 span { color: #888; font-weight: 400; }
+  .grid svg { width: 100%; height: 300px; display: block; }
+  .row { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 18px; }
+  .row .sheet { border: 1px solid #ccc; }
+  .row h3 { margin: 0 0 4px; font-size: 13px; }
+  table { border-collapse: collapse; }
+  td, th { border: 1px solid #ddd; padding: 3px 8px; text-align: right; }
+  td:first-child, th:first-child { text-align: left; }
+  .warn { background: #fde2e2; }
+</style>
+</head>
+<body>
+<div id="out"></div>
+<script src="../lineart.js"></script>
+<script src="../art.js"></script>
+<script src="../puzzle.js"></script>
+<script>
+  const q = new URLSearchParams(location.hash.slice(1));
+  const mode = q.get("m") || "art";
+  const want = q.get("t");
+  const seed = q.get("s") || "PREVIEW";
+  const out = document.getElementById("out");
+  const subjects = window.DOT_ART.filter(s => !want || want.split(",").includes(s.name));
+
+  function artView() {
+    const grid = document.createElement("div");
+    grid.className = "grid";
+    for (const subject of subjects) {
+      const prep = LineArt.prepare(subject);
+      for (const level of [1, 2, 3]) {
+        const s = LineArt.strokes(prep, level);
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        for (const st of s) for (const [x, y] of st.pts) {
+          x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+        }
+        const [w, h] = [x1 - x0, y1 - y0];
+        const pad = Math.max(w, h) * 0.04, u = Math.max(w, h);
+        const paths = s.map(st =>
+          `<path d="M${st.pts.map(p => p[0].toFixed(1) + " " + p[1].toFixed(1)).join("L")}${st.closed ? "Z" : ""}" ` +
+          `fill="none" stroke="#111" stroke-width="${u / 220}" stroke-linejoin="round" stroke-linecap="round"/>` +
+          (st.closed ? "" : [st.pts[0], st.pts[st.pts.length - 1]].map(p =>
+            `<circle cx="${p[0]}" cy="${p[1]}" r="${u / 180}" fill="#e33" fill-opacity=".7"/>`).join(""))
+        ).join("");
+        const cell = document.createElement("div");
+        cell.className = "cell";
+        cell.innerHTML = `<h3>${subject.name}<span>level ${level} · ${s.length} strokes</span></h3>` +
+          `<svg viewBox="${x0 - pad} ${y0 - pad} ${w + pad * 2} ${h + pad * 2}">${paths}</svg>`;
+        grid.appendChild(cell);
+      }
+    }
+    out.appendChild(grid);
+  }
+
+  function sheet(subject, diff) {
+    const preset = Puzzle.PRESETS[diff];
+    const land = Puzzle.aspectOf(subject, preset) > 1.15;
+    const w = land ? 273 : 186, h = land ? 168 : 255;
+    const model = Puzzle.build(subject, preset, w, h, Puzzle.mulberry32(Puzzle.hashSeed(seed)));
+    return { model, w, h, preset };
+  }
+
+  function dotsView() {
+    for (const subject of subjects) {
+      for (const diff of Object.keys(Puzzle.PRESETS)) {
+        const { model, w, h, preset } = sheet(subject, diff);
+        const row = document.createElement("div");
+        row.className = "row";
+        const scale = 3.6;   // px per mm, roughly 1:1 on a 96dpi screen x 1.4
+        row.innerHTML =
+          `<div><h3>${subject.name} · ${diff} · ${model.count} dots · ${model.lines} lines</h3>` +
+          `<div class="sheet" style="width:${w * scale}px;height:${h * scale}px">${Puzzle.renderPuzzle(model, preset, w, h)}</div></div>` +
+          `<div><h3>answer</h3><div class="sheet" style="width:${w * scale / 2.2}px;height:${h * scale / 2.2}px">` +
+          `${Puzzle.renderAnswer(model, w, h)}</div></div>`;
+        out.appendChild(row);
+      }
+    }
+  }
+
+  function statsView() {
+    const diffs = Object.keys(Puzzle.PRESETS);
+    // "scale" is how big the subject prints at that difficulty relative to
+    // Medium. Scenery added at the higher levels widens the frame, and if it
+    // reaches too far the subject itself shrinks on the page.
+    const scaleOf = (subject, preset) => {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const st of LineArt.strokes(LineArt.prepare(subject), preset.level))
+        for (const [x, y] of st.pts) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+      const land = (x1 - x0) / (y1 - y0) > 1.15;
+      const w = land ? 273 : 186, h = land ? 168 : 255;
+      return Math.min((w - 16) / (x1 - x0), (h - 16) / (y1 - y0));
+    };
+    let html = `<table><tr><th>subject</th>${diffs.map(d => `<th>${d} dots</th><th>lines</th><th>scale</th>`).join("")}</tr>`;
+    for (const subject of subjects) {
+      html += `<tr><td>${subject.name}</td>`;
+      const base = scaleOf(subject, Puzzle.PRESETS[diffs[0]]);
+      for (const d of diffs) {
+        const { model, preset } = sheet(subject, d);
+        const low = model.count < preset.dots * 0.55;
+        const sc = scaleOf(subject, preset) / base;
+        html += `<td class="${low ? "warn" : ""}">${model.count}</td><td>${model.lines}</td>` +
+                `<td class="${sc < 0.85 ? "warn" : ""}">${sc.toFixed(2)}</td>`;
+      }
+      html += "</tr>";
+    }
+    out.innerHTML = html + "</table>";
+  }
+
+  // How legible the numbers are, over every subject, difficulty and a few
+  // seeds. Each fault is a share of all numbers printed:
+  //   clash  - printed over another number
+  //   steal  - clearly nearer some other dot than its own (by 25%)
+  //   cover  - printed over a dot
+  //   cross  - a line the solver draws runs through it
+  //   crowd  - dots carrying three or more numbers
+  function qualityView() {
+    const seeds = (q.get("seeds") || "A1,B2,C3").split(",");
+    const diffs = Object.keys(Puzzle.PRESETS);
+    const rows = {};
+    const boxDist = (x, y, m) => Math.hypot(Math.max(0, Math.abs(x - m.lx) - m.hw), Math.max(0, Math.abs(y - m.ly) - m.hh));
+    const crosses = (a, b, m) => {
+      // sample the segment; good enough for a statistic
+      for (let k = 1; k < 20; k++) {
+        const x = a[0] + (b[0] - a[0]) * k / 20, y = a[1] + (b[1] - a[1]) * k / 20;
+        if (Math.abs(x - m.lx) < m.hw - 0.1 && Math.abs(y - m.ly) < m.hh - 0.1) return true;
+      }
+      return false;
+    };
+    for (const d of diffs) rows[d] = { n: 0, clash: 0, steal: 0, cover: 0, cross: 0, crowd: 0, dots: 0, lines: 0, builds: 0 };
+    for (const subject of subjects) for (const d of diffs) for (const sd of seeds) {
+      const preset = Puzzle.PRESETS[d];
+      const land = Puzzle.aspectOf(subject, preset) > 1.15;
+      const w = land ? 273 : 186, h = land ? 168 : 255;
+      const model = Puzzle.build(subject, preset, w, h, Puzzle.mulberry32(Puzzle.hashSeed(sd)));
+      const marks = Puzzle.layout(model, preset, w, h);
+      const segs = [];
+      for (const ids of model.seq) for (let k = 1; k < ids.length; k++) segs.push([model.dots[ids[k - 1]].p, model.dots[ids[k]].p]);
+      const r = rows[d];
+      r.builds++; r.dots += model.count; r.lines += model.lines;
+      marks.forEach((m, i) => {
+        r.n++;
+        if (m.labels.length >= 3) r.crowd++;
+        let clash = false, steal = false, cover = false;
+        const own = boxDist(m.x, m.y, m);
+        marks.forEach((o, j) => {
+          if (i === j) return;
+          if (Math.abs(o.lx - m.lx) < o.hw + m.hw && Math.abs(o.ly - m.ly) < o.hh + m.hh) clash = true;
+          const od = boxDist(o.x, o.y, m);
+          if (od < own * 0.75 - 0.2) steal = true;
+          if (od < preset.dot * 0.5) cover = true;
+        });
+        if (clash) r.clash++; if (steal) r.steal++; if (cover) r.cover++;
+        if (segs.some(([a, b]) => crosses(a, b, m))) r.cross++;
+      });
+    }
+    const pct = (a, n) => (100 * a / n).toFixed(2) + "%";
+    let html = `<table><tr><th>difficulty</th><th>avg dots</th><th>avg lines</th><th>clash</th><th>steal</th>` +
+      `<th>cover</th><th>cross</th><th>crowd</th></tr>`;
+    for (const d of diffs) {
+      const r = rows[d];
+      html += `<tr><td>${d}</td><td>${(r.dots / r.builds).toFixed(0)}</td><td>${(r.lines / r.builds).toFixed(1)}</td>` +
+        `<td>${pct(r.clash, r.n)}</td><td>${pct(r.steal, r.n)}</td><td>${pct(r.cover, r.n)}</td>` +
+        `<td>${pct(r.cross, r.n)}</td><td>${pct(r.crowd, r.n)}</td></tr>`;
+    }
+    out.innerHTML = html + "</table>";
+  }
+
+  ({ art: artView, dots: dotsView, stats: statsView, quality: qualityView })[mode]();
+  document.title = "done";
+</script>
+</body>
+</html>
