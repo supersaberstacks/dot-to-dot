@@ -4,14 +4,20 @@ A single-page site that generates a printable A4 dot-to-dot puzzle. Press
 **New puzzle** for a fresh one, **Print** to put it on paper. No build step and
 no dependencies: `index.html` plus three plain scripts.
 
-| file | what it is |
-| --- | --- |
-| `art.js` | the 38 subjects, drawn by hand as layered shapes |
-| `lineart.js` | turns a drawing into the lines a solver draws |
-| `puzzle.js` | turns those lines into numbered dots |
-| `tools/preview.html` | authoring aid: every drawing, puzzle and statistic at a glance |
+**Where it lives:** <https://supersaberstacks.github.io/dot-to-dot/> (GitHub Pages; not in a container).
 
-## Run it locally
+## Using it
+
+Pick a subject, a difficulty and the paper (**Auto** chooses portrait or landscape), then press **New puzzle**
+(or <kbd>R</kbd>). The seed is in the
+URL along with the difficulty, paper and subject, so a link brings back the same puzzle.
+
+To print: leave margins at **Default** and scale at **100%** (uncheck "Fit to page").
+`@page { size: A4; margin: 0 }` means the sheet prints 1:1. The answer, when
+enabled, prints as page 2 with the subject named - the puzzle sheet deliberately
+never names it.
+
+## Setting it up
 
 Open `index.html` in a browser. If your browser refuses to load the scripts
 from `file://` (some do), serve the folder instead:
@@ -20,7 +26,16 @@ from `file://` (some do), serve the folder instead:
 npx serve .          # or: python -m http.server
 ```
 
-## What makes a good dot-to-dot
+## Development
+
+| file | what it is |
+| --- | --- |
+| `art.js` | the 38 subjects, drawn by hand as layered shapes |
+| `lineart.js` | turns a drawing into the lines a solver draws |
+| `puzzle.js` | turns those lines into numbered dots |
+| `tools/preview.html` | authoring aid: every drawing, puzzle and statistic at a glance |
+
+### What makes a good dot-to-dot
 
 Two things, and they pull against each other:
 
@@ -38,7 +53,7 @@ fold of an ear, the line of a leg against a body, a wing over a flank - and
 the dots are placed so that the dot field reads as a scatter until it is
 joined.
 
-## How a picture is drawn
+### How a picture is drawn
 
 Each subject in `art.js` is a stack of simple shapes painted back to front, the
 way a cartoon is inked: a filled shape hides whatever is behind it, and only the
@@ -64,7 +79,7 @@ penguin printed it at 59% of its Medium size, and a tree beside the giraffe
 crowded its patches into tiny clusters of numbers. `tools/preview.html#m=stats`
 reports the scale for every subject; all of them now keep at least 83%.
 
-## How a picture becomes a puzzle
+### How a picture becomes a puzzle
 
 1. **Line art.** `lineart.js` flattens the shapes and works out which parts of
    each outline are visible at the chosen difficulty.
@@ -82,7 +97,7 @@ reports the scale for every subject; all of them now keep at least 83%.
    a new run is ringed and its number is bold. A dot shared by two runs shows
    both numbers, `17/42`.
 
-## Hiding the picture
+### Hiding the picture
 
 The dot count is not what makes a puzzle hard to guess - how the dots are
 spread is. Three decisions do most of the work:
@@ -115,7 +130,7 @@ The count depends on the drawing - a castle is all corners, a whale is all
 curves - which is why the menu says "about", and the sheet header always
 reports the real count.
 
-## Number placement
+### Number placement
 
 Each number tries 64 spots around its dot - sixteen directions at four
 distances - and takes the cheapest. The preferred direction is down the middle
@@ -148,7 +163,7 @@ that time and a full second for the busiest subject; sorting each shape's
 edges into horizontal bands, so a point only tests the edges level with it,
 fixed that.
 
-## Adding or changing a subject
+### Adding or changing a subject
 
 Drawings live in `art.js`. A layer is one of:
 
@@ -186,20 +201,13 @@ may sit closer together. A loop that cannot fit four dots at a difficulty's
 spacing is left out rather than drawn as a triangle, and a tick shorter than
 the gap between two numbers is dropped.
 
-## Reproducibility
+### Reproducibility
 
 Nothing depends on fonts or the device: the drawings are numbers in `art.js`,
 so a seed reproduces the same puzzle. The seed is in the URL along with the
 difficulty, paper and subject.
 
-## Print
-
-Leave margins at **Default** and scale at **100%** (uncheck "Fit to page").
-`@page { size: A4; margin: 0 }` means the sheet prints 1:1. The answer, when
-enabled, prints as page 2 with the subject named - the puzzle sheet deliberately
-never names it.
-
-## Known limits
+## Notes and limits
 
 - Epic averages 24 pencil lifts. Spots, buttons and portholes are separate
   closed shapes, and every one is a fresh start. The giraffe, with its patches,
